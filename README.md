@@ -11,7 +11,7 @@ This script analyzes domains to determine if they are valid, active, and not par
 3. Parked domain detection
 4. Content analysis for parking indicators
 
-The results are saved in a CSV file with detailed status information for each domain.
+The results are saved in a CSV file with detailed status information for each domain, allowing for better analysis of potential false positives.
 
 ## Requirements
 
@@ -32,7 +32,7 @@ pip install dnspython requests beautifulsoup4
 ## Usage
 
 ```bash
-python3 email-domain-validator-new.py your_domain_list.csv [max_workers]
+python3 email-domain-validator-modified.py your_domain_list.csv [max_workers]
 ```
 
 Where:
@@ -41,30 +41,30 @@ Where:
 
 Example:
 ```bash
-python3 email-domain-validator-new.py domaintest.csv 20
+python3 email-domain-validator-modified.py domaintest.csv 20
 ```
 
 ## Output
 
 The script generates a timestamped CSV file with the following columns:
+
 - **DOMAIN**: The domain name
-- **STATUS**: Either "VALID" or "INVALID"
+- **MX RECORD**: Whether the domain has MX records (True/False)
+- **A RECORD**: Whether the domain has A records (True/False)
+- **SITE LIVE**: Whether the domain's website is accessible (True/False)
+- **PARKED DOMAIN**: Whether the domain appears to be parked (True/False)
+- **STATUS**: "Valid", "Invalid", or "Risky"
 - **NOTES**: Detailed information about the validation result
 
-Example filename: `domain_validation_results_20250314-123045.csv`
+Example filename: `domain_validation_results_20250318-123045.csv`
 
 ## Validation Categories
 
-Domains can be categorized as:
+Domains are now categorized into three clear statuses:
 
-- **Valid**: Active domain with proper DNS records
-- **Invalid - invalid_format**: Domain name doesn't follow proper format
-- **Invalid - no_dns_records**: Domain has no MX or A records
-- **Invalid - parking_mx**: Domain uses MX records typical of parked domains
-- **Invalid - restrictive_spf**: (Removed in current version) Previously flagged domains with restrictive SPF policies
-- **Invalid - dead_domain**: Domain doesn't respond to connection attempts
-- **Invalid - parked_domain**: Domain appears to be parked/unused
-- **Invalid - error**: Error occurred during validation
+- **Valid**: Domain passes all checks - has DNS records, site is live, and isn't parked
+- **Invalid**: Domain fails basic checks or is parked - includes domains with no DNS records, parked domains, unreachable domains with no MX records
+- **Risky**: Domain has MX records (could potentially receive email) but the site isn't live - these domains require manual review
 
 ## Features
 
@@ -72,8 +72,8 @@ Domains can be categorized as:
 - Comprehensive domain status checks
 - Detailed parking detection algorithms
 - Root domain fallback for subdomains
-- Progress indicator during processing
-- CSV output for easy analysis
+- Progress indicator during processing with status-based emoji indicators (✅, ❌, ⚠️)
+- Enhanced CSV output with detailed status attributes for better analysis of potential false positives
 
 ## Email Security Records
 
@@ -94,6 +94,14 @@ The script uses multiple methods to detect parked domains:
 4. Common parking page patterns (Whois lookup, related searches, etc.)
 5. Registration placeholder page detection
 
+## Understanding Results
+
+The expanded CSV format provides more granular information to help identify potential false positives:
+
+- If a domain has **MX RECORD = True** but **SITE LIVE = False**, it's marked as "Risky" since it may still be used for email even without a website
+- Domains with **PARKED DOMAIN = True** are always "Invalid" regardless of other factors
+- Domains need both DNS records and a live site to be marked "Valid"
+
 ## Troubleshooting
 
 If you encounter false positives/negatives, you can adjust:
@@ -101,3 +109,12 @@ If you encounter false positives/negatives, you can adjust:
 1. The `PARKING_KEYWORDS` list for keyword-based detection
 2. The `PARKING_MX_PATTERNS` list for MX-record based detection
 3. The parking pattern indicators in the `check_if_parked` method
+4. The classification logic in the `check_domain_validity` method
+
+## Changelog from Previous Version
+
+- Added new status category "Risky" for domains with MX records but no live site
+- Expanded CSV output to include detailed check results (MX records, A records, site liveness, parking status)
+- Simplified status classification to three categories: Valid, Invalid, Risky
+- Improved console output with status-specific emoji indicators
+- Enhanced handling of domains that have email capability but no website
