@@ -21,7 +21,10 @@ class DomainValidator:
             "domain broker", "domain for purchase",
             "coming soon", "register.com", "domain registration",
             "related searches", "whois lookup", "domain name",
-            "this domain is available", "pending renewal or deletion"
+            "this domain is available", "pending renewal or deletion",
+            "under construction", "page is under construction", "coming soon",
+            "networksolutions", "this page is under construction",
+            "digi-searches", "why am i seeing this", "trademark free notice"
         ]
 
     def check_domain_validity(self, domain):
@@ -32,7 +35,11 @@ class DomainValidator:
                 return {
                     "domain": domain,
                     "valid": False,
-                    "status": "invalid_format",
+                    "mx_records": False,
+                    "a_records": False,
+                    "site_live": False,
+                    "parked_domain": False,
+                    "status": "Invalid",
                     "reason": "Invalid domain format"
                 }
             
@@ -44,8 +51,10 @@ class DomainValidator:
                 "a_records": False,
                 "spf_record": None,
                 "dmarc_record": None,
+                "site_live": False,
+                "parked_domain": False,
                 "valid": False,
-                "status": "unknown",
+                "status": "Unknown",
                 "reason": ""
             }
             
@@ -107,14 +116,13 @@ class DomainValidator:
                 
             # Decision logic for DNS records - only invalidate for no DNS records or clear parking
             if not results["mx_records"] and not results["a_records"]:
-                results["valid"] = False
-                results["status"] = "no_dns_records"
+                results["status"] = "Invalid"
                 results["reason"] = "No MX or A records found"
                 return results
             
             if results.get("parking_mx", False):
-                results["valid"] = False
-                results["status"] = "parking_mx"
+                results["parked_domain"] = True
+                results["status"] = "Invalid"
                 results["reason"] = f"Domain uses parking MX: {results['parking_mx']}"
                 return results
             
@@ -122,35 +130,44 @@ class DomainValidator:
             # Now check if the domain is actually live
             domain_status = self.check_domain_liveness(domain)
             
-            results["domain_status"] = domain_status["status"]
+            # Set site_live based on domain status
+            results["site_live"] = domain_status["status"] == "live"
             results["domain_details"] = domain_status["details"]
             
-            if domain_status["status"] == "dead":
-                results["valid"] = False
-                results["status"] = "dead_domain"
+            # Check if the domain is parked
+            if domain_status["status"] == "parked":
+                results["parked_domain"] = True
+                results["status"] = "Invalid"
                 results["reason"] = domain_status["details"]
-            elif domain_status["status"] == "parked":
-                results["valid"] = False
-                results["status"] = "parked_domain"
-                results["reason"] = domain_status["details"]
-            elif domain_status["status"] == "subdomain_dead":
-                # Subdomain is dead but root domain is live - consider it valid
-                results["valid"] = True
-                results["status"] = "valid"
-                results["reason"] = domain_status["details"]
+            elif domain_status["status"] == "dead":
+                # Site is not live
+                if results["mx_records"]:
+                    # MX records exist but site is dead - Risky
+                    results["status"] = "Risky"
+                    results["reason"] = "Has MX records but site isn't live"
+                else:
+                    # No MX and site is dead - Invalid
+                    results["status"] = "Invalid"
+                    results["reason"] = domain_status["details"]
             else:
-                # Domain is live and passes all checks
-                results["valid"] = True
-                results["status"] = "valid"
+                # Domain is live and not parked - Valid
+                results["status"] = "Valid"
                 results["reason"] = "Domain passed all checks"
+            
+            # Determine validity based on status
+            results["valid"] = results["status"] == "Valid"
             
             return results
         
         except Exception as e:
             return {
                 "domain": domain,
+                "mx_records": False,
+                "a_records": False,
+                "site_live": False,
+                "parked_domain": False,
                 "valid": False,
-                "status": "error",
+                "status": "Invalid",
                 "reason": f"Error checking records: {str(e)}"
             }
 
@@ -236,13 +253,17 @@ class DomainValidator:
                     return False, "Could not analyze content"
             
             # Check for common parking service redirects - very specific
-            if any(parking_service in response.url.lower() for parking_service in [
+            parking_services = [
                 "sedoparking.com", "hugedomains.com/domain_profile", "godaddyparking.com", 
                 "parkingcrew.net", "parklogic.com", "fabulous.com/park", "bodis.com/parking",
                 "register.com/domain", "registrar.godaddy.com", "networksolutions.com/manage-it",
                 "domainsponsor", "domaincontrol.com", "namesilo.com/domain",
-                "namedrive.com", "crazydomains.com", "buydomains.com", "parked.namecheap.com"
-            ]):
+                "namedrive.com", "crazydomains.com", "buydomains.com", "parked.namecheap.com",
+                "i2.cdn-image.com", "digi-searches.com", "cdn-image.com", "cdn.consentmanager.net", 
+                "delivery.consentmanager.net"
+            ]
+            
+            if any(parking_service in response.url.lower() for parking_service in parking_services):
                 return True, "Redirects to parking service"
             
             # Check content for parking indicators
@@ -269,16 +290,34 @@ class DomainValidator:
                 if parking_phrase_count >= 3:
                     return True, f"Contains multiple parking keywords ({parking_phrase_count})"
                 
-                # Check for common parking page patterns
+                # Additional content checks for Network Solutions and similar 'under construction' pages
+                network_solutions_indicators = [
+                    "related searches" in body_text and "under construction" in body_text,
+                    "page is under construction" in body_text and len(soup.find_all('a')) > 5,
+                    "this domain" in body_text and "under construction" in body_text,
+                    "cdn-image.com" in str(soup) or "digi-searches.com" in str(soup),
+                    "networksolutions.com" in str(soup) and "under construction" in body_text,
+                    "trademark free notice" in body_text.lower(),
+                    soup.find('img', {'src': re.compile(r'.*cdn-image\.com.*')}) is not None,
+                    soup.find('a', {'href': re.compile(r'.*digi-searches\.com.*')}) is not None,
+                    "trademark" in body_text and "notice" in body_text and "networksolutions" in str(soup).lower(),
+                    "why am i seeing this" in body_text.lower() and "under construction" in body_text.lower()
+                ]
+                
+                if any(network_solutions_indicators):
+                    return True, "Detected Network Solutions 'Under Construction' page"
+                
+                # Also check for standard parking patterns
                 parking_indicators = [
-                    "coming soon" in body_text and "register" in body_text,
+                    "coming soon" in body_text and "register" in body_text and "domain" in body_text,
                     "related searches" in body_text and len(soup.find_all(['a'])) > 10,
-                    "domain" in title.lower() and "register" in body_text,
-                    "whois lookup" in body_text and len(body_text.strip()) < 1000,
+                    "domain" in title.lower() and "register" in body_text and ("for sale" in body_text or "parked" in body_text),
+                    "whois lookup" in body_text and "domain registration" in body_text,
                     "copyright" in body_text and "register.com" in body_text,
                     len(body_text.strip()) < 300 and len(soup.find_all(['a'])) > 15 and "domain" in body_text,
-                    "coming soon" in title.lower() or "parked" in title.lower(),
-                    soup.find('a', string=re.compile(r'Whois\s+Lookup', re.I)) is not None
+                    "coming soon" in title.lower() and "domain" in title.lower(),
+                    "parked" in title.lower(),
+                    soup.find('a', string=re.compile(r'Whois\s+Lookup', re.I)) is not None and len(body_text.strip()) < 800
                 ]
                 
                 if any(parking_indicators):
@@ -301,15 +340,13 @@ class DomainValidator:
             print(f"Loaded {len(domains)} domains from {filename}")
             
             results = {
-                "valid": [],
-                "invalid_format": [],
-                "no_dns_records": [],
-                "parking_mx": [],
-                "dead_domain": [],
-                "parked_domain": [],
-                "subdomain_dead": [],
-                "error": []
+                "Valid": [],
+                "Invalid": [],
+                "Risky": []
             }
+            
+            # Store the full results for CSV export
+            detailed_results = []
             
             # Use ThreadPoolExecutor for concurrent checks
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -322,54 +359,62 @@ class DomainValidator:
                         result = future.result()
                         status = result["status"]
                         
-                        # Categorize based on status
+                        # Add to the appropriate category
                         if status in results:
                             results[status].append((result["domain"], result["reason"]))
-                        else:
-                            results["error"].append((result["domain"], f"Unknown status: {status}"))
                         
-                        # Print progress
-                        emoji = "✅" if result.get("valid", False) else "❌"
-                        print(f"[{i+1}/{len(domains)}] {emoji} {status.upper()}: {result['domain']} ({result['reason']})")
+                        # Add to detailed results for CSV export
+                        detailed_results.append(result)
+                        
+                        # Print progress with appropriate emoji
+                        emoji_map = {"Valid": "✅", "Invalid": "❌", "Risky": "⚠️"}
+                        emoji = emoji_map.get(status, "❓")
+                        print(f"[{i+1}/{len(domains)}] {emoji} {status}: {result['domain']} ({result['reason']})")
                             
                     except Exception as e:
                         print(f"[{i+1}/{len(domains)}] ❌ ERROR: {domain} ({str(e)})")
-                        results["error"].append((domain, str(e)))
+                        results["Invalid"].append((domain, str(e)))
+                        
+                        # Add error result to detailed results
+                        detailed_results.append({
+                            "domain": domain,
+                            "mx_records": False,
+                            "a_records": False,
+                            "site_live": False,
+                            "parked_domain": False,
+                            "status": "Invalid",
+                            "reason": str(e)
+                        })
             
             # Print summary
             print("\n" + "="*50)
             print("SUMMARY:")
             print("="*50)
             print(f"Total domains: {len(domains)}")
-            print(f"Valid domains: {len(results['valid'])}")
-            print(f"Invalid format: {len(results['invalid_format'])}")
-            print(f"No DNS records: {len(results['no_dns_records'])}")
-            print(f"Parking MX records: {len(results['parking_mx'])}")
-            print(f"Dead domains: {len(results['dead_domain'])}")
-            print(f"Dead subdomains with live root: {len(results['subdomain_dead'])}")
-            print(f"Parked domains: {len(results['parked_domain'])}")
-            print(f"Processing errors: {len(results['error'])}")
+            print(f"Valid domains: {len(results['Valid'])}")
+            print(f"Risky domains: {len(results['Risky'])}")
+            print(f"Invalid domains: {len(results['Invalid'])}")
             
             # Generate filename with timestamp
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             csv_filename = f'domain_validation_results_{timestamp}.csv'
             
-            # Write results to CSV file
+            # Write results to CSV file with new columns
             with open(csv_filename, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['DOMAIN', 'STATUS', 'NOTES'])
+                writer.writerow(['DOMAIN', 'MX RECORD', 'A RECORD', 'SITE LIVE', 'PARKED DOMAIN', 'STATUS', 'NOTES'])
                 
-                # Write valid domains first
-                for domain, reason in results['valid']:
-                    writer.writerow([domain, 'VALID', reason])
-                
-                # Write all invalid domains
-                invalid_categories = ['invalid_format', 'no_dns_records', 'parking_mx', 
-                                    'dead_domain', 'parked_domain', 'error']
-                for category in invalid_categories:
-                    if category in results:
-                        for domain, reason in results[category]:
-                            writer.writerow([domain, 'INVALID', f"{category}: {reason}"])
+                # Write all domains
+                for result in detailed_results:
+                    writer.writerow([
+                        result["domain"],
+                        "True" if result.get("mx_records", False) else "False",
+                        "True" if result.get("a_records", False) else "False",
+                        "True" if result.get("site_live", False) else "False",
+                        "True" if result.get("parked_domain", False) else "False",
+                        result["status"],
+                        result["reason"]
+                    ])
             
             print(f"\nResults saved to '{csv_filename}'")
             
